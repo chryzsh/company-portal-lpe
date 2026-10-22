@@ -1,4 +1,4 @@
-# company-portal-recon
+# company-portal-lpe
 
 BOF chain for [CVE-2025-43715](https://blog.amberwolf.com/blog/2026/october/company-portal-self-service-to-system/):
 NSIS installer race condition on Intune-managed Windows devices.
