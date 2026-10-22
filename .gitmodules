@@ -1,0 +1,3 @@
+[submodule "winget-stats"]
+	path = winget-stats
+	url = https://github.com/AmberWolfCyber/winget-stats

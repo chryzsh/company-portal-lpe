@@ -1,0 +1,15 @@
+add_library(race SHARED race_pe.c)
+set_target_properties(race PROPERTIES PREFIX "")
+
+target_include_directories(race PRIVATE ${CMAKE_SOURCE_DIR}/beacon ${CMAKE_SOURCE_DIR}/common)
+target_link_libraries(race beacon)
+
+if (CMAKE_C_COMPILER_ID MATCHES "MSVC|Clang")
+    target_compile_options(race PRIVATE /GS- /MT)
+    target_link_options(race PRIVATE /MERGE:.gfids=. /MERGE:_RDATA=. /MERGE:.data=. /MERGE:.rdata=. /MERGE:.pdata=. /SECTION:.,RW /MERGE:.discard_data=.discard)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_link_options(race PRIVATE /SAFESEH)
+    endif()
+else()
+    target_link_options(race PRIVATE -static -T${LINK_SCRIPT} -Wl,--strip-debug)
+endif()

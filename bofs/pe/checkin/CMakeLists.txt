@@ -1,0 +1,15 @@
+add_library(checkin SHARED checkin_pe.c)
+set_target_properties(checkin PROPERTIES PREFIX "")
+
+target_include_directories(checkin PRIVATE ${CMAKE_SOURCE_DIR}/beacon ${CMAKE_SOURCE_DIR}/common)
+target_link_libraries(checkin beacon -lsspicli -lrpcrt4)
+
+if (CMAKE_C_COMPILER_ID MATCHES "MSVC|Clang")
+    target_compile_options(checkin PRIVATE /GS- /MT)
+    target_link_options(checkin PRIVATE /MERGE:.gfids=. /MERGE:_RDATA=. /MERGE:.data=. /MERGE:.rdata=. /MERGE:.pdata=. /SECTION:.,RW /MERGE:.discard_data=.discard)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_link_options(checkin PRIVATE /SAFESEH)
+    endif()
+else()
+    target_link_options(checkin PRIVATE -static -T${LINK_SCRIPT} -Wl,--strip-debug)
+endif()

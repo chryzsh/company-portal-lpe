@@ -1,0 +1,12 @@
+bin/
+obj/
+*.dll
+*.exe
+
+# BOF-PE build artifacts
+bofs/pe/build-*/
+
+# Internal docs (lab-specific)
+docs/oc2-jupyter-automation.md
+bofs/BOFPE_PLAN.md
+HANDOFF.md
